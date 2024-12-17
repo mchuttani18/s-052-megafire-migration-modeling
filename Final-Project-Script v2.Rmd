@@ -1,0 +1,663 @@
+---
+title: "Final Project Data Analysis"
+author: "Milan Chuttani"
+date: "2024-11-16"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+library(dplyr)
+library(ggplot2)
+library(sf)
+library(leaflet)
+library(lubridate)
+library(tidyr)
+library(lme4)
+library(modelsummary)
+library(kableExtra)
+library(stargazer)
+
+```
+## === 1. SPATIAL DATA LOADING ===
+
+```{r echo=FALSE}
+
+# 1. Load data sets - fire perimeters and zipcodes
+#       - Fire Perimeters and Buffers were compiled in QGIS. 
+
+fire_perimeters <- st_read("./data/cleaned/CA_Megafires/CA Megafires 2020_2022_v2.shp")
+zipcodes <- st_read("./data/cleaned/CA_Zipcodes_Filtered/CA_Zipcodes_Filtered.shp") %>% 
+  select(-c(W_2021, A_2021,POP_SQMI, SQMI))
+
+fire_buffers <- st_read("./data/cleaned/CA_Megafires_5mi_Buffer/CA_Megafires_5mi_Buffered.shp")
+
+# 2. Filter for eligibility criteria 
+#     - Fire is from 2020, 2021, or 2022 (Done in QGIS)
+#     - Zip code pop > 500 (based on 2017 data) (Done in QGIS)
+#     - Fire acres is greater than 24,000 acres or a part of a complex >24,000 acres. 
+#     - the Bonny Complex and Butte Lightning Complex appear in the dataset despite being <24,000 acres. These are removed manually. 
+
+megafires <- fire_perimeters %>% 
+            filter(!(COMPLEX_NA %in% c("BONNY COMPLEX", "BUTTE LIGHTNING COMPLEX")))%>%
+            select(c(OBJECTID, YEAR_, AGENCY, UNIT_ID, FIRE_NAME, ALARM_DATE, GIS_ACRES, COMPLEX_NA)) %>% 
+            mutate(BURNED = 1)
+
+buffers <- fire_buffers %>% 
+            filter(!(COMPLEX_NA %in% c("BONNY COMPLEX", "BUTTE LIGHTNING COMPLEX")))%>%
+            select(c(OBJECTID, YEAR_, AGENCY, UNIT_ID, FIRE_NAME, ALARM_DATE, GIS_ACRES, COMPLEX_NA)) %>% 
+            mutate(BURNED = 0)
+```
+## === 2A. DATA CLEANING - 2020: 
+```{r}
+#A. Fire perimeters for 2020
+megafires_2020 <- megafires %>% filter(YEAR_ == "2020")
+
+#B1. Burned zip codes for 2020
+burned_2020 <- st_intersection(zipcodes, megafires_2020)
+
+#B2. Only keep the earliest alarm for burned 
+earliest_alarm_burned_2020 <- burned_2020 %>% 
+  st_drop_geometry() %>% 
+  group_by(ZIP_CODE) %>% 
+  summarize(EARLIEST_ALARM = min(ALARM_DATE, na.rm=TRUE))
+
+burned_2020_filtered <- burned_2020 %>%
+  inner_join(earliest_alarm_burned_2020, by = c("ZIP_CODE" = "ZIP_CODE", "ALARM_DATE" = "EARLIEST_ALARM"))
+
+#C1. Adjacent zip codes for 2020
+buffered_2020 <- buffers %>% filter(YEAR_=="2020")
+adjacent_2020 <- st_intersection(zipcodes, buffered_2020) %>% 
+        filter(!(ZIP_CODE %in% burned_2020$ZIP_CODE))
+
+#C2. Keep only the earliest alarm for adjacent
+earliest_alarm_adjacent_2020 <- adjacent_2020 %>% 
+  st_drop_geometry() %>% 
+  group_by(ZIP_CODE) %>% 
+  summarize(EARLIEST_ALARM = min(ALARM_DATE, na.rm=TRUE))
+
+adjacent_2020_filtered <- adjacent_2020 %>%
+  inner_join(earliest_alarm_adjacent_2020, by = c("ZIP_CODE" = "ZIP_CODE", "ALARM_DATE" = "EARLIEST_ALARM"))
+
+# E. Final data cleaning - If two fires in the same zip code start at the same date, then remove the smaller fire manually
+#   - 2 zipcodes from burned_2020_filtered; 0 zipcodes from adjacent zipcodes. 
+
+burned_2020_filtered <- burned_2020_filtered %>% 
+  filter(!OBJECTID %in% c(1214, 1196))
+
+# F. Create a "combined" dataset and add to a single dataset
+
+combined <- rbind(burned_2020_filtered, adjacent_2020_filtered)
+```
+
+## === 2B. Data Cleaning - Repeat for 2021: 
+```{r}
+#A. Fire perimeters for 2021
+megafires_2021 <- megafires %>% filter(YEAR_ == "2021")
+
+#B1. Burned zip codes for 2020
+burned_2021 <- st_intersection(zipcodes, megafires_2021)
+
+#B2. Only keep the earliest alarm for burned 
+earliest_alarm_burned_2021 <- burned_2021 %>% 
+  st_drop_geometry() %>% 
+  group_by(ZIP_CODE) %>% 
+  summarize(EARLIEST_ALARM = min(ALARM_DATE, na.rm=TRUE))
+
+burned_2021_filtered <- burned_2021 %>%
+  inner_join(earliest_alarm_burned_2021, by = c("ZIP_CODE" = "ZIP_CODE", "ALARM_DATE" = "EARLIEST_ALARM"))
+
+#C1. Adjacent zip codes for 2020
+buffered_2021 <- buffers %>% filter(YEAR_=="2021")
+adjacent_2021 <- st_intersection(zipcodes, buffered_2021) %>% 
+        filter(!(ZIP_CODE %in% burned_2021$ZIP_CODE))
+
+#C2. Keep only the earliest alarm for adjacent
+earliest_alarm_adjacent_2021 <- adjacent_2021 %>% 
+  st_drop_geometry() %>% 
+  group_by(ZIP_CODE) %>% 
+  summarize(EARLIEST_ALARM = min(ALARM_DATE, na.rm=TRUE))
+
+adjacent_2021_filtered <- adjacent_2021 %>%
+  inner_join(earliest_alarm_adjacent_2021, by = c("ZIP_CODE" = "ZIP_CODE", "ALARM_DATE" = "EARLIEST_ALARM"))
+
+# E. Final data cleaning - No need for 2021
+
+# F. Merge with the "combined" dataset
+
+combined <- rbind(combined, burned_2021_filtered)
+combined <- rbind(combined, adjacent_2021_filtered)
+
+```
+
+## === 2C. Data Cleaning - Repeat for 2022: 
+```{r}
+#A. Fire perimeters for 2022
+megafires_2022 <- megafires %>% filter(YEAR_ == "2022")
+
+#B1. Burned zip codes for 2022
+burned_2022 <- st_intersection(zipcodes, megafires_2022)
+
+#B2. Only keep the earliest alarm for burned 
+earliest_alarm_burned_2022 <- burned_2022 %>% 
+  st_drop_geometry() %>% 
+  group_by(ZIP_CODE) %>% 
+  summarize(EARLIEST_ALARM = min(ALARM_DATE, na.rm=TRUE))
+
+burned_2022_filtered <- burned_2022 %>%
+  inner_join(earliest_alarm_burned_2022, by = c("ZIP_CODE" = "ZIP_CODE", "ALARM_DATE" = "EARLIEST_ALARM"))
+
+#C1. Adjacent zip codes for 2022
+buffered_2022 <- buffers %>% filter(YEAR_=="2022")
+adjacent_2022 <- st_intersection(zipcodes, buffered_2022) %>% 
+        filter(!(ZIP_CODE %in% burned_2022$ZIP_CODE))
+
+#C2. Keep only the earliest alarm for adjacent
+earliest_alarm_adjacent_2022 <- adjacent_2022 %>% 
+  st_drop_geometry() %>% 
+  group_by(ZIP_CODE) %>% 
+  summarize(EARLIEST_ALARM = min(ALARM_DATE, na.rm=TRUE))
+
+adjacent_2022_filtered <- adjacent_2022 %>%
+  inner_join(earliest_alarm_adjacent_2022, by = c("ZIP_CODE" = "ZIP_CODE", "ALARM_DATE" = "EARLIEST_ALARM"))
+
+# E. Final data cleaning - If two fires in the same zip code start at the same date, then remove the smaller fire.
+#   - 2 zipcodes from burned_2022_filtered 
+#   - 1 zipcodes from adjacent_2022_filtered
+
+burned_2022_filtered <- burned_2022_filtered %>% 
+  filter(!OBJECTID == 495)
+
+adjacent_2022_filtered <- adjacent_2022_filtered %>% 
+  filter(!(OBJECTID == 495 & ZIP_CODE == 95527))
+
+# F. Merge with the "combined" dataset
+
+combined <- rbind(combined, burned_2022_filtered)
+combined <- rbind(combined, adjacent_2022_filtered)
+```
+
+## === 2D Data Cleaning - Calculating Months: 
+```{r echo=FALSE}
+start_date <- as.Date("2019-07-01")
+
+# If an alarm date is after the 25th of a month, then set "Month 0" as the next month. Otherwise, keep Month 0 as the month of the alarm date. 
+combined <- combined %>% mutate(SIMPLIFIED_ALARM_DATE  = if_else(
+        day(ALARM_DATE) >= 25,
+        # Set to the first day of the next month if after the 25th
+        floor_date(ALARM_DATE + months(1), "month"),
+        # Otherwise, set to the first day of the current month
+        floor_date(ALARM_DATE, "month")
+      ))
+
+combined <- combined %>% mutate(MONTH_AFTER_START =  floor(time_length(interval(start_date, SIMPLIFIED_ALARM_DATE), "months"))) 
+
+combined_zip <- combined %>% st_drop_geometry()
+
+```
+
+## === 2. DATA CLEANING - MERGE WITH NET MIGRATION DATA ===
+```{r}
+# Helper Function: Searches the migration table for the 6 months before and after each wildfire - aggregates in the main zip table.  
+
+aggregate_migration_month <- function(ref_month, zipcode, migrations) {
+  # Define the 6-month windows
+  start_before = ref_month - 6
+  start_after = ref_month
+  end_after = ref_month + 6
+
+  # Calculate net migration for the periods. Month 0 (the reference month) is included in "After".
+  total_before <- migrations %>%
+    filter(MONTH_AFTER_START >= start_before & MONTH_AFTER_START < start_after & ZIPCODE == !!zipcode) %>%
+    summarise(total_before = sum(NET.MIGRATION, na.rm = TRUE)) %>%
+    pull(total_before)
+
+  total_after <- migrations %>%
+    filter(MONTH_AFTER_START >= start_after & MONTH_AFTER_START < end_after & ZIPCODE == !!zipcode) %>%
+    summarise(total_after = sum(NET.MIGRATION, na.rm = TRUE)) %>%
+    pull(total_after)
+
+  list(total_before = total_before, total_after = total_after)
+}
+
+# 4. Load in migration data 
+
+Y2019 <- read.csv("./data/Change of Address Data/Y2019.csv") %>% 
+    filter(ZIPCODE %in% combined$ZIP_CODE) %>% 
+    select(c(YYYYMM, ZIPCODE, CITY, TOTAL.FROM.ZIP, TOTAL.TO.ZIP))
+Y2020 <- read.csv("./data/Change of Address Data/Y2020.csv") %>% 
+    filter(ZIPCODE %in% combined$ZIP_CODE) %>% 
+    select(c(YYYYMM, ZIPCODE, CITY, TOTAL.FROM.ZIP, TOTAL.TO.ZIP))
+Y2021 <- read.csv("./data/Change of Address Data/Y2021.csv") %>% 
+    filter(ZIPCODE %in% combined$ZIP_CODE) %>% 
+    select(c(YYYYMM, ZIPCODE, CITY, TOTAL.FROM.ZIP, TOTAL.TO.ZIP))
+Y2022 <- read.csv("./data/Change of Address Data/Y2022.csv") %>% 
+    filter(ZIPCODE %in% combined$ZIP_CODE) %>% 
+    select(c(YYYYMM, ZIPCODE, CITY, TOTAL.FROM.ZIP, TOTAL.TO.ZIP))
+Y2023 <- read.csv("./data/Change of Address Data/Y2023.csv") %>% 
+    filter(ZIPCODE %in% combined$ZIP_CODE) %>% 
+    select(c(YYYYMM, ZIPCODE, CITY, TOTAL.FROM.ZIP, TOTAL.TO.ZIP))
+
+
+tmp_migration <-  do.call("rbind", list(Y2019, Y2020, Y2021, Y2022, Y2023))
+combined_migration <- tmp_migration %>% mutate(NET.MIGRATION = TOTAL.TO.ZIP - TOTAL.FROM.ZIP)
+
+
+# Begin rearranging data to combine migration and zipcode data
+combined_migration <- combined_migration %>% mutate(
+    # Convert the number format YYYYMM to a Date object representing the first of that month
+    DATE = ym(as.character(YYYYMM)))
+
+combined_migration <- combined_migration %>% mutate(MONTH_AFTER_START =  floor(time_length(interval(start_date, DATE), "months")))
+
+# Aggregate 8 month before and after calculations.
+data_1 <- combined_zip %>%
+  rowwise() %>%
+  mutate(
+    totals = list(aggregate_migration_month(MONTH_AFTER_START, ZIP_CODE, combined_migration))
+  ) %>%
+  mutate(
+    total_before = totals$total_before,
+    total_after = totals$total_after
+  ) %>%
+  select(-totals)
+
+
+# Calculate percentages of total population
+
+data_1 <- data_1 %>% mutate(percent_before = (total_before*100)/POPULATION, 
+                            percent_after = (total_after*100)/POPULATION)
+
+
+```
+
+## === Draw Descriptive Plots
+### 1. Scatter plot showing over the months average change in percentages
+```{r}
+
+# Join tables on zipcodes
+combined_migration$ZIPCODE <- as.character(combined_migration$ZIPCODE)
+
+scatter <- combined_zip %>%
+  inner_join(combined_migration, by = c("ZIP_CODE" = "ZIPCODE"))
+
+scatter <- scatter %>% rename(MONTH_FIRE = MONTH_AFTER_START.x, 
+                              MONTH_MIGRATION = MONTH_AFTER_START.y)
+
+
+# Calculate the relative months: difference between months
+scatter <- scatter %>%
+  mutate(
+    months_difference = MONTH_MIGRATION - MONTH_FIRE,
+    within_window = months_difference >= -8 & months_difference <= 7,
+    percent_migration = (100*NET.MIGRATION)/POPULATION
+  ) %>%
+  filter(within_window)
+
+#Make plot - zoomed in
+plot_zoomed <- ggplot(scatter, aes(x = months_difference, y = percent_migration, color = factor(BURNED))) +
+  geom_point(position = position_jitter(width = 0.15, height = 0), alpha=0.3) +
+  scale_color_manual(values = c("blue", "red")) +
+  geom_smooth(method = "loess", span = 0.25, se = TRUE) +  # LOESS curve
+  geom_vline(xintercept = 0, linetype = "dashed", color = "yellow") +
+  coord_cartesian(ylim = c(-4, 4)) +
+  theme_minimal() +  
+  labs(title = "Net Migration by Month: Control and Treatment Groups, 2020 - 2022",
+       x = "Months Relative to the Start of a Megafire",
+       y = "Net Migration as Percent of Total Population (%)",
+       color = "Burned")
+
+plot_zoomed
+
+#Make plot - full
+plot_full <- ggplot(scatter, aes(x = months_difference, y = percent_migration, color = factor(BURNED))) +
+  geom_point(position = position_jitter(width = 0.3, height = 0), alpha=0.5) +
+  scale_color_manual(values = c("blue", "red")) +
+  geom_smooth(method = "loess", span = 0.25, se = TRUE) +  # LOESS curve
+  theme_minimal() +  
+  labs(title = "Net Migration by Month: Control and Treatment Groups, 2020 - 2022",
+       x = "Months Relative to the Start of a Megafire",
+       y = "Net Migration as Percent of Total Population (%)",
+       color = "Burned")
+plot_full
+```
+
+### 2. Box Plot and Difference-In-Difference Plots
+
+```{r}
+
+# Reshape the data to long format
+data_1_long <- data_1 %>%
+  pivot_longer(cols = c(percent_before, percent_after), 
+               names_to = "time", 
+               values_to = "percent_change")
+
+data_1_long <- data_1_long %>% mutate(time = ifelse(time == "percent_before", 0, 1))
+
+data_1_long <- data_1_long %>%
+  mutate(group_time = factor(paste(ifelse(BURNED == 0, "Control", "Treatment"), 
+                                   "Time", time, sep = "-"),
+                             levels = c("Control-Time-0", "Control-Time-1",
+                                        "Treatment-Time-0", "Treatment-Time-1")))
+
+medians <- data_1_long %>%
+  mutate(group_time = factor(paste(ifelse(BURNED == 0, "Control", "Treatment"), 
+                                   "Time", time, sep = "-"),
+                             levels = c("Control-Time-0", "Control-Time-1",
+                                        "Treatment-Time-0", "Treatment-Time-1"))) %>%
+  group_by(group_time, BURNED) %>%
+  summarise(median_percent_change = median(percent_change, na.rm = TRUE))
+
+#Fix Labels
+new_labels <- c(
+  "Control-Time-0" = "Control: Megafire Adjacent (Before)",
+  "Control-Time-1" = "Control: Megafire Adjacent (After)",
+  "Treatment-Time-0" = "Treatment: Megafire Affected (Before)",
+  "Treatment-Time-1" = "Treatment: Megafire Affected (After)"
+)
+
+# Plot with adjusted x-axis
+ggplot(data_1_long, aes(x = group_time, y = percent_change, fill = factor(BURNED))) +
+  geom_boxplot(outlier.shape = NA) +
+  geom_line(data = medians, aes(x = group_time, y = median_percent_change, 
+                                group = BURNED, color = factor(BURNED)), 
+            position = position_dodge(width = 0.75)) +
+    coord_cartesian(ylim = c(-4, 4)) +
+  scale_fill_manual(values = c("blue", "red")) +  # Set fill colors for Burned groups
+  scale_color_manual(values = c("blue", "red")) +  # Set line colors matching fill
+  scale_x_discrete(labels = new_labels) +  # Custom x-axis labels
+  labs(
+    title = "Distribution of Percent Change Before and After",
+    x = "Group and Time",
+    y = "Percent Change",
+    fill = "Burned"
+  ) +
+  theme_minimal() + 
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) # Rotate x-axis labels
+
+
+# ========Difference in Difference 
+
+
+# Assuming `data_1_long` is preprocessed correctly
+# Calculate means and SE for period and burned groups
+means_se <- data_1_long %>%
+  group_by(group_time, BURNED) %>%
+  summarise(
+    mean_change = mean(percent_change, na.rm = TRUE),
+    se = sd(percent_change, na.rm = TRUE) / sqrt(n())
+  )
+
+# Adding separate time and group variables
+means_se <- means_se %>% 
+  mutate(
+    Time = ifelse(grepl("0", group_time), "Before", "After"),
+    Group = ifelse(grepl("Control", group_time), "Control (adjacent to megafire)", "Treatment (burned by megafire)")
+  )
+
+means_se$Time <- factor(means_se$Time, levels = c("Before", "After"))
+
+
+# Create the plot with x for Time and separate dodging for Groups
+did_plot <- ggplot(means_se, aes(x = Time, y = mean_change, color = Group, group = Group)) +
+  geom_point(size = 3, position = position_dodge(width = 0)) +  # Points for means
+  geom_errorbar(aes(ymin = mean_change - se, ymax = mean_change + se),
+                width = 0.2, position = position_dodge(width = 0)) +  # Error bars
+  geom_line(position = position_dodge(width = 0)) +  # Lines connecting means
+  scale_color_manual(values = c("blue", "red")) +  # Set line and point colors
+  labs(
+    title = "Difference-in-differences: Causal effect of megafire damage on net migration",
+    x = "Time (6-month period relative to megafire)",
+    y = "Net Migration as Percent of Total Population (%)",
+    color = "Group"
+  ) +
+  theme_minimal()
+
+
+did_plot
+```
+
+### 3. Summary Table for Results 
+
+```{r}
+# Calculate SD, Mean, Etc. for each grouping
+
+standard_error <- function(x) {
+  sd(x) / sqrt(length(x))
+}
+
+summary_table <- data_1_long %>%
+  group_by(time, BURNED) %>%
+  summarise(
+    mean = round(mean(percent_change, na.rm = TRUE), 3),
+    sd = round(sd(percent_change, na.rm = TRUE), 3),
+    se = round(standard_error(percent_change), 3),
+    n = n()
+  )
+
+summary_table <- summary_table %>%
+  rename(
+    `Time Period` = time,
+    `Burned by Wildfire?` = BURNED,
+    `Number of Zip Codes` = n,
+    Mean = mean,
+    SD = sd,
+    SE = se
+  ) %>%
+  mutate(`Time Period` = ifelse(`Time Period` == 0, "Before", "After"),
+         `Burned by Wildfire?` = ifelse(`Burned by Wildfire?` == 0, "No", "Yes")) %>%
+  arrange(desc(`Burned by Wildfire?`))
+  
+
+# Format table for publication
+formatted_table <- summary_table %>%
+  kable("html", caption = "Summary Statistics of Percent Change in Net Migration by Time Period and Burn Status") %>%
+  kable_styling(full_width = FALSE, bootstrap_options = c("striped", "hover", "condensed")) %>%
+  column_spec(3:6, background = "lightgrey") %>%  # Background color for columns
+  footnote(general = "Wildfire-affected zipcodes, our treatment group, were burned by a megafire. Wildfire-adjacent zipcodes, our control group, were not burned by a megafire but fell within 5 miles of the fire perimeter. Our time calculations aggregate net-migration across  6 months before and during/after a megafire.",general_title = "Table Note: ")
+# Print the table
+formatted_table
+
+```
+# === Results: Running the Models:
+
+### Part 1: Diff in Diff
+```{r}
+
+# Part 1: Diff in Diff
+
+mod1 <- lm(percent_change ~ BURNED, data=data_1_long)
+mod2 <- lm(percent_change ~ time, data=data_1_long)
+
+
+mod3 <- lm(percent_change ~ BURNED * time, data = data_1_long)
+summary(mod3)
+modelsummary(list(mod1, mod2, mod3), stars = TRUE)
+
+stargazer(mod1, mod2, mod3, type = "text",
+          column.labels = c("Treatment Only", "Time Only", "Diff-in-Diff"),
+          model.numbers = TRUE,
+          dep.var.labels = "Net Migration (%)",
+          covariate.labels = c("Burned by Megafire", "Post Fire Time Period", "Burned by Megafire x Post Fire"),
+          keep.stat = c("n"),
+          title="Table 2: Difference in Differences: Model of Causal Effect of Megafire Damage on Zipcode Net-Migration ",
+          out="part1-diff-in-diff.html")
+
+```
+
+### Part 2: Multilevel Mixed Effects Models
+
+```{r}
+
+histogram_acres <- ggplot(megafires, aes(x=GIS_ACRES)) + 
+  geom_histogram(bins=15, fill="lightgreen", color="black") + 
+  ylab("Frequency") + xlab("Acres Burned") + ggtitle("Number of acres burned per CA megafire: 2020 - 2022 (n=45)")
+histogram_acres
+
+histogram_population <- ggplot(data_1, aes(x=POPULATION)) + 
+  geom_histogram(bins=15, fill="lightgreen", color="black") + 
+  ylab("Frequency") + xlab("Population of Zipcode") + ggtitle("Population of Included Zipcodes (n=272)")
+histogram_population
+
+```
+
+```{r}
+df <- data_1_long %>% filter(time == 1)
+df <- df %>% mutate(FIRE_NAME = as.factor(FIRE_NAME))
+
+mod1 <- lmer(percent_change ~ log(POPULATION) + (1|FIRE_NAME), data = df, REML = FALSE)
+summary(mod1)
+
+mod2 <- lmer(percent_change ~ log(POPULATION) + BURNED + (1|FIRE_NAME), data = df, REML = FALSE)
+summary(mod2)
+
+mod3 <- lmer(percent_change ~ log(POPULATION) + BURNED + log(GIS_ACRES) + (1|FIRE_NAME), data = df, REML = FALSE)
+summary(mod3)
+
+#same with sigam2_u and sigma2_e
+temp <- do.call(rbind, lapply(list(mod1, mod2, mod3), FUN = function(x) data.frame(VarCorr(x))))
+sigma2_u <- round(temp$vcov[c(1, 3, 5)], 3)
+#sigma2_u <- c("", sigma2_u)
+#sigma2_u <- sigma2_u[c(2, 1, 3, 4)]
+
+sigma2_e <- round(temp$vcov[c(2, 4, 6)], 3)
+#sigma2_e <- c("", sigma2_e)
+#sigma2_e <- sigma2_e[c(2, 1, 3, 4)]
+
+#Generate model building tables
+stargazer(mod1, mod2, mod3, type = "text",
+          column.labels = paste("Model", 1:3),
+          model.numbers = FALSE,
+          keep = c("Constant", "POPULATION", "BURNED", "GIS_ACRES"),
+          keep.stat = c("n"),
+          title="Table 3: Multilevel Mixed-Effects Models of Post-Megafire Net Migration",
+          out="part2-random-effects-output.html",
+          add.lines = list(c("sigma2u", sigma2_u),
+                           c("sigma2e", sigma2_e)))
+
+# Calculate ICC for mod3
+
+# Extract variance components
+variance_components <- VarCorr(mod3)
+
+VarCorr(mod1)
+VarCorr(mod2)
+VarCorr(mod3)
+
+# Extract the variances
+fire_variance <- as.numeric(variance_components$FIRE_NAME[1])
+residual_variance <- attr(variance_components, "sc")^2
+
+ICC <- fire_variance / (fire_variance + residual_variance)
+
+```
+
+## == Double check filtering in Leaflet ==
+```{r}
+
+reset_crs <- function(data){
+  crs_target <- 4326
+
+  if (st_crs(data)$epsg != crs_target) {
+    tmp <- st_transform(data, crs_target)
+  }
+  return(tmp)
+}
+
+adjacent <- reset_crs(adjacent_2020)
+burned <- reset_crs(intersected_2020)
+perimeters <- reset_crs(megafires)
+
+combined_map <- reset_crs(combined)
+
+burned_combined <- combined_map %>% filter(BURNED==1)
+adjacent_combined <- combined_map %>% filter(BURNED==0)
+
+
+# Transform to WGS 84 (EPSG:4326) if necessary
+# if (st_crs(adjacent_2020)$epsg != crs_target) {
+#   adjacent_2020 <- st_transform(adjacent_2020, crs_target)
+# }
+# 
+# if (st_crs(buffered_2020)$epsg != crs_target) {
+#   fire_perimeters <- st_transform(fire_perimeters, crs_target)
+# }
+# 
+# if (st_crs(fire_perimeters)$epsg != crs_target) {
+#   fire_perimeters <- st_transform(fire_perimeters, crs_target)
+# }
+
+map <- leaflet() %>%
+    addProviderTiles(providers$CartoDB.Positron) %>%
+    addPolygons(data = adjacent_combined, 
+                color = "blue", 
+                weight = 1, 
+                opacity = 0.5, 
+                fillOpacity = 0.2, 
+                group = "Zipcodes")%>%
+   addPolygons(data = burned_combined, 
+                color = "red", 
+                weight = 1, 
+                opacity = 0.5, 
+                fillOpacity = 0.2, 
+                group = "Zipcodes")%>%
+    addPolygons(data = perimeters, 
+                color = "black", 
+                weight = 1, 
+                opacity = 0.5, 
+                fillOpacity = 0.2, 
+                group = "Fire Perimeters") %>%
+  addLayersControl(
+    overlayGroups = c("Zipcodes", "Fire Perimeters"),
+    options = layersControlOptions(collapsed = FALSE)
+  )
+
+map
+
+```
+
+## Appendix - Exploratory Case Studies from Select Zipcodes
+
+```{r cars}
+Y2019 <- read.csv("./data/Change of Address Data/Y2019.csv") %>% 
+    filter(ZIPCODE %in% primary_zipcodes) %>% 
+    select(c(YYYYMM, ZIPCODE, CITY, TOTAL.FROM.ZIP, TOTAL.TO.ZIP))
+Y2020 <- read.csv("./data/Change of Address Data/Y2020.csv") %>% filter(ZIPCODE %in% primary_zipcodes) %>% 
+    select(c(YYYYMM, ZIPCODE, CITY, TOTAL.FROM.ZIP, TOTAL.TO.ZIP))
+Y2021 <- read.csv("./data/Change of Address Data/Y2021.csv") %>% 
+    filter(ZIPCODE %in% primary_zipcodes) %>% 
+    select(c(YYYYMM, ZIPCODE, CITY, TOTAL.FROM.ZIP, TOTAL.TO.ZIP))
+Y2022 <- read.csv("./data/Change of Address Data/Y2022.csv") %>% 
+    filter(ZIPCODE %in% primary_zipcodes) %>% 
+    select(c(YYYYMM, ZIPCODE, CITY, TOTAL.FROM.ZIP, TOTAL.TO.ZIP))
+
+combined_all <-  do.call("rbind", list(Y2019, Y2020, Y2021, Y2022))
+
+combined_all <- combined_all %>% mutate(NET.MIGRATION = TOTAL.TO.ZIP - TOTAL.FROM.ZIP)
+
+#North Complex Fire - 
+
+graphFire <- function(zipcode, month, firename){
+  location <- combined_all %>% filter(ZIPCODE == zipcode)
+  location$MONTH <- 1:nrow(location)
+  print(location)
+
+  
+  ggplot(location, aes(x = MONTH, y = NET.MIGRATION)) +
+    geom_bar(stat = "identity", fill = "skyblue", color = "black") +
+    theme_minimal() +
+    labs(title = paste0("Net Migration by Month: ", firename, " - ", zipcode),
+         x = "Month",
+         y = "Net Migration") + 
+    geom_vline(xintercept = month, linetype = "dashed", color = "red")   # Add a vertical dashed line
+}
+
+
+graphFire(95636, 21, "Caldor Fire")
+graphFire(95684, 21, "Caldor Fire")
+graphFire(95916, 13, "North Complex Fire")
+graphFire(95947, 24, "Dixie Fire")
+#graphFire(94576, 1, "Glass Fire") Deer Park no data
+graphFire(94574, 15, "Glass Fire")
+graphFire(94558, 14, "LNU Lightning Complex Fire")
+
+```
